@@ -155,19 +155,8 @@ KAKAO_REST_KEY = _get("KAKAO_REST_KEY", "")
 KAKAO_API_BASE = _get("KAKAO_API_BASE", "https://dapi.kakao.com").rstrip("/")
 NOMINATIM_BASE = _get("NOMINATIM_BASE", "https://nominatim.openstreetmap.org").rstrip("/")
 
-# ── 소셜 로그인 (각 사 개발자 콘솔에서 앱 등록 → 아래 키 입력 · 콜백 주소: <서버 주소>/api/auth/social/<회사>/callback) ──
-PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "").rstrip("/")     # 비우면 접속한 주소 그대로 (터널 주소가 바뀌면 콘솔 등록도 바꿔야 함)
-KAKAO_CLIENT_ID = _get("KAKAO_CLIENT_ID", "") or KAKAO_REST_KEY   # 카카오 REST API 키 (카카오 로그인 활성화 필요)
-KAKAO_CLIENT_SECRET = _get("KAKAO_CLIENT_SECRET", "")          # 보안 > Client Secret 을 켰을 때만
-NAVER_CLIENT_ID = _get("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = _get("NAVER_CLIENT_SECRET", "")
-GOOGLE_CLIENT_ID = _get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = _get("GOOGLE_CLIENT_SECRET", "")
-APPLE_CLIENT_ID = _get("APPLE_CLIENT_ID", "")      # Services ID (예: com.sharepie.web)
-APPLE_TEAM_ID = _get("APPLE_TEAM_ID", "")
-APPLE_KEY_ID = _get("APPLE_KEY_ID", "")
-APPLE_PRIVATE_KEY = _get("APPLE_PRIVATE_KEY", "")  # AuthKey_XXXX.p8 파일 경로 (또는 PEM 내용)
-OAUTH_FAKE_BASE = _get("OAUTH_FAKE_BASE", "")      # 테스트 전용 (tests/fake_oauth.py). 실제 운영에서는 비워 둔다
+# ── 공개 주소 (메일 속 링크 등) — 비우면 접속한 주소 그대로
+PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "").rstrip("/")
 
 # ── 메일 (회원가입 인증번호 · 비밀번호 재설정) ──
 # Gmail: SMTP_HOST=smtp.gmail.com SMTP_PORT=587 SMTP_USER=내주소@gmail.com SMTP_PASSWORD=앱 비밀번호(16자리)

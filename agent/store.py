@@ -22,7 +22,7 @@ def _load() -> dict[str, Any]:
 
 _db = _load()
 for _k in ("users", "charges", "codes", "sessions", "groups", "chats", "attempts", "merchants",
-           "devices", "oauth_states", "social_tickets", "social_ids", "listings", "notifs"):
+           "devices", "listings", "notifs"):
     _db.setdefault(_k, {})
 
 

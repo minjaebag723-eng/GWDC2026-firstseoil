@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import functools
 import hashlib
+import hmac
 import math
 import threading
 import re
@@ -20,7 +21,7 @@ import time
 import uuid
 from typing import Any
 
-from . import abi, assistant, beta, chain as chainmod, geo, mailer, social, config, dispute, llm, money, quota, report, settlement, shopping, store, usage, websearch, recs
+from . import abi, assistant, beta, chain as chainmod, geo, mailer, config, dispute, llm, money, quota, report, settlement, shopping, store, usage, websearch, recs
 from . import textutil
 from .textutil import won
 
@@ -104,7 +105,7 @@ def _public_user(u: dict[str, Any]) -> dict[str, Any]:
     m = store.get_member(u["short"])
     return {"name": u["name"], "short": u["short"], "email": u["email"], "wallet": m["wallet"] if m else None,
             "createdAt": u["created_at"], "id": u.get("pie_id"), "address": u.get("address") or "",
-            "social": sorted((u.get("social") or {}).keys()), "hasPassword": bool(u.get("pw"))}
+            "hasPassword": bool(u.get("pw"))}
 
 
 # ───────────── Pie ID (친구가 나를 찾는 공개 아이디) ─────────────
@@ -508,11 +509,9 @@ def login(email: str, password: str) -> dict[str, Any]:
     if att.get("until", 0) > now:
         raise ServiceError("LOGIN_LOCKED", f"로그인을 5번 실패해서 {int(att['until'] - now) // 60 + 1}분 동안 잠겼어요.", "auth", 429)
     u = store.user_by_email(email)
-    if u and not u.get("pw") and u.get("social"):   # 소셜로만 가입한 계정
-        names = "·".join(social.NAMES.get(p, p) for p in u["social"])
-        raise ServiceError("SOCIAL_ACCOUNT", f"이 이메일은 {names} 계정으로 가입했어요. 아래 {names} 버튼으로 로그인해 주세요. "
-                           "(비밀번호를 만들려면 ‘비밀번호 재설정’)", "auth", 401, {"providers": sorted(u["social"])})
-    if not u or not u.get("pw") or u["pw"] != _hash_pw(password or "", u["salt"]):
+    if u and not u.get("pw"):   # 비밀번호가 없는 계정 (예전 방식으로 만든 계정) → 재설정으로 만들게
+        raise ServiceError("NO_PASSWORD", "비밀번호가 없는 계정이에요. 아래 ‘비밀번호 재설정’으로 비밀번호를 만든 뒤 로그인해 주세요.", "auth", 401)
+    if not u or not u.get("pw") or not hmac.compare_digest(u["pw"], _hash_pw(password or "", u["salt"])):
         fails = att.get("fails", 0) + 1
         store.kv_put("attempts", email, {"fails": 0, "until": now + 300} if fails >= 5 else {"fails": fails, "until": 0})
         raise ServiceError("AUTH_FAILED", "이메일 또는 비밀번호가 맞지 않아요." + (f" ({fails}/5)" if fails >= 3 else ""), "auth", 401)
@@ -549,7 +548,7 @@ def reset_password(email: str, code: str, password: str) -> dict[str, Any]:
 
 @_locked
 def change_password(user: dict[str, Any], old: str, new: str) -> dict[str, Any]:
-    if user.get("pw") and user["pw"] != _hash_pw(old or "", user["salt"]):   # 소셜 가입자는 처음 만들 때 현재 비밀번호 없음
+    if user.get("pw") and not hmac.compare_digest(user["pw"], _hash_pw(old or "", user["salt"])):   # 비밀번호가 없는 계정은 처음 만들 때 현재 비밀번호 없음
         raise ServiceError("AUTH_FAILED", "현재 비밀번호가 맞지 않아요.", "auth", 401)
     _check_pw(new)
     salt = secrets.token_hex(8)
@@ -574,16 +573,14 @@ def find_id(name: str) -> dict[str, Any]:
 def withdraw(user: dict[str, Any], password: str) -> dict[str, Any]:
     if not user.get("pw"):
         if (password or "").strip() != "탈퇴":
-            raise ServiceError("AUTH_FAILED", "소셜 가입 계정은 확인란에 ‘탈퇴’라고 입력해 주세요.", "auth", 401)
-    elif user["pw"] != _hash_pw(password or "", user["salt"]):
+            raise ServiceError("AUTH_FAILED", "비밀번호가 없는 계정은 확인란에 ‘탈퇴’라고 입력해 주세요.", "auth", 401)
+    elif not hmac.compare_digest(user["pw"], _hash_pw(password or "", user["salt"])):
         raise ServiceError("AUTH_FAILED", "비밀번호가 맞지 않아요.", "auth", 401)
     active = [r["name"] for r in store.all_settlements()
               if r["status"] in ("open", "locked", "disputed") and any(m["name"] == user["short"] for m in r["members"])]
     if active:
         raise ServiceError("HAS_ACTIVE_SETTLEMENT", f"진행 중인 정산이 있어 탈퇴할 수 없어요: {', '.join(active[:3])}. 정산이 끝난 뒤 다시 시도해 주세요.",
                            "auth", 409, {"settlements": active})
-    for p, sub in (user.get("social") or {}).items():
-        store.kv_put("social_ids", f"{p}:{sub}", None)
     for k, v in list(store.kv_all("devices").items()):
         if v and v.get("email") == user["email"]:
             store.kv_put("devices", k, None)
@@ -622,178 +619,18 @@ def forget_device(device: str | None) -> dict[str, Any]:
     return {"forgotten": True}
 
 
-# ───────────── 소셜 로그인 (agent/social.py가 각 사와 통신, 여기서는 계정 연결·가입) ─────────────
-_TICKET_TTL = 600
 
 
-def social_providers() -> list[dict[str, Any]]:
-    return social.providers()
-
-
-def _check_provider(provider: str) -> None:
-    if provider not in social.NAMES:
-        raise ServiceError("NOT_FOUND", "지원하지 않는 소셜 로그인이에요.", "auth.social", 404)
-    if not social.configured(provider):
-        raise ServiceError("SOCIAL_NOT_CONFIGURED", f"{social.NAMES[provider]} 로그인은 아직 준비 중이에요. "
-                           "(서버 .env에 키가 없어요 — 이메일로 가입해 주세요)", "auth.social", 409)
-
-
-@_locked
-def social_start(provider: str, redirect_uri: str, link_email: str | None = None) -> str:
-    _check_provider(provider)
-    now = time.time()
-    for k, v in list(store.kv_all("oauth_states").items()):   # 만료된 state 청소
-        if v and v.get("exp", 0) < now:
-            store.kv_put("oauth_states", k, None)
-    state = secrets.token_urlsafe(24)
-    store.kv_put("oauth_states", state, {"provider": provider, "redirect_uri": redirect_uri, "exp": now + 600, "link": link_email})
-    return social.authorize_url(provider, redirect_uri, state)
-
-
-@_locked
-def _pop_state(state: str) -> dict[str, Any] | None:
-    st = store.kv_get("oauth_states", state or "") if state else None
-    if st:
-        store.kv_put("oauth_states", state, None)   # 1회용 (재사용·CSRF 방지)
-    return st if st and st.get("exp", 0) >= time.time() else None
-
-
-def _new_ticket(data: dict[str, Any]) -> str:
-    t = secrets.token_urlsafe(24)
-    store.kv_put("social_tickets", hashlib.sha256(t.encode()).hexdigest(), {**data, "exp": time.time() + _TICKET_TTL})
-    return t
-
-
-def social_callback(provider: str, code: str | None, state: str | None, error: str | None = None,
-                    apple_user: str | None = None) -> str:
-    """각 사가 돌려보낸 요청 처리 → 앱에 넘길 1회용 티켓. 실패하면 ServiceError."""
-    st = _pop_state(state or "")
-    if not st or st["provider"] != provider:
-        raise ServiceError("SOCIAL_STATE", "로그인 요청이 만료됐거나 올바르지 않아요. 처음부터 다시 시도해 주세요.", "auth.social", 400)
-    if error or not code:
-        raise ServiceError("SOCIAL_CANCELLED", f"{social.NAMES[provider]} 로그인이 취소됐어요.", "auth.social", 400)
-    try:
-        ident = social.fetch_identity(provider, code, st["redirect_uri"], state or "", apple_user)
-    except social.SocialError as e:
-        raise ServiceError(e.code, e.message, "auth.social", 502) from e
-    return _social_finish(ident, st.get("link"))
-
-
-@_locked
-def _social_finish(ident: dict[str, Any], link_email: str | None) -> str:
-    key = f"{ident['provider']}:{ident['sub']}"
-    owner = (store.kv_get("social_ids", key) or {}).get("email")
-    if owner and not store.user_by_email(owner):
-        store.kv_put("social_ids", key, None)
-        owner = None
-    pname = social.NAMES[ident["provider"]]
-    if link_email:                                   # 로그인한 상태에서 '계정 연결'
-        if owner and owner != link_email:
-            raise ServiceError("SOCIAL_TAKEN", f"이 {pname} 계정은 이미 다른 Share Pie 계정에 연결돼 있어요.", "auth.social", 409)
-        _link(link_email, ident)
-        return _new_ticket({"kind": "linked", "email": link_email, "provider": ident["provider"]})
-    if owner:
-        return _new_ticket({"kind": "login", "email": owner, "provider": ident["provider"]})
-    if ident.get("email") and ident.get("email_verified") and store.user_by_email(ident["email"]):
-        _link(ident["email"], ident)                 # 같은 (확인된) 이메일로 가입한 계정이 있으면 자동 연결
-        return _new_ticket({"kind": "login", "email": ident["email"], "provider": ident["provider"], "linked": True})
-    return _new_ticket({"kind": "signup", **ident})  # 처음 온 사람 → 이름·Pie ID 입력 단계
-
-
-def _link(email: str, ident: dict[str, Any]) -> None:
-    u = store.user_by_email(email)
-    soc = dict(u.get("social") or {})
-    soc[ident["provider"]] = ident["sub"]
-    store.update_user(email, {"social": soc})
-    store.kv_put("social_ids", f"{ident['provider']}:{ident['sub']}", {"email": email})
-
-
-def _ticket(ticket: str, consume: bool) -> dict[str, Any]:
-    k = hashlib.sha256((ticket or "").encode()).hexdigest()
-    t = store.kv_get("social_tickets", k)
-    if not t or t["exp"] < time.time():
-        if t:
-            store.kv_put("social_tickets", k, None)
-        raise ServiceError("SOCIAL_TICKET", "소셜 로그인 시간이 지났어요. 다시 시도해 주세요.", "auth.social", 400)
-    if consume:
-        store.kv_put("social_tickets", k, None)
-    return t
-
-
-@_locked
-def social_exchange(ticket: str) -> dict[str, Any]:
-    t = _ticket(ticket, consume=False)
-    pname = social.NAMES[t["provider"]]
-    if t["kind"] in ("login", "linked"):
-        _ticket(ticket, consume=True)
-        u = store.user_by_email(t["email"])
-        if not u:
-            raise ServiceError("SOCIAL_TICKET", "계정을 찾을 수 없어요. 다시 시도해 주세요.", "auth.social", 400)
-        if t["kind"] == "linked":
-            return {"status": "linked", "provider": t["provider"], "providerName": pname, "social": sorted(u.get("social") or {})}
-        return {"status": "ok", "provider": t["provider"], "providerName": pname, "linked": bool(t.get("linked")),
-                **_public_user(u), "token": _new_session(u["email"])}
-    return {"status": "need_profile", "provider": t["provider"], "providerName": pname, "email": t.get("email") or "",
-            "emailVerified": bool(t.get("email_verified") and t.get("email")),
-            "name": re.sub(r"[^가-힣A-Za-z0-9 ]", "", t.get("name") or "")[:12],
-            "pieId": _auto_pie_id(t.get("email") or f"{t['provider']}{t['sub'][-6:]}@x")}
-
-
-@_locked
-def social_complete(ticket: str, name: str, pie_id: str | None, email: str | None = None, code: str | None = None) -> dict[str, Any]:
-    """처음 소셜로 온 사람의 가입 마무리 (이름·Pie ID, 이메일을 못 받았으면 메일 인증)."""
-    t = _ticket(ticket, consume=False)
-    if t["kind"] != "signup":
-        raise ServiceError("SOCIAL_TICKET", "이미 처리된 로그인이에요. 다시 시도해 주세요.", "auth.social", 400)
-    name = (name or "").strip()
-    if not name or len(name) > 12 or not re.fullmatch(r"[가-힣A-Za-z0-9 ]+", name):
-        raise ServiceError("BAD_REQUEST", "이름은 12자 이하 한글·영문·숫자로 입력해 주세요.", "auth")
-    short = unique_short(name)            # 같은 이름도 가입 가능 (친구는 Pie ID로 구분)
-    if t.get("email") and t.get("email_verified"):
-        mail = t["email"]
-    else:                                              # 이메일을 못 받았거나 확인 안 된 주소 → 메일 인증
-        mail = _norm_email(email or "")
-        _use_code(mail, "signup", code or "")
-    if store.user_by_email(mail):
-        raise ServiceError("EMAIL_TAKEN", "이미 가입된 이메일이에요. 그 계정으로 로그인한 뒤 ‘내 정보 > 소셜 계정 연결’에서 연결해 주세요.", "auth", 409)
-    if pie_id:
-        c = check_pie_id(pie_id)
-        if not c["available"]:
-            raise ServiceError("PIE_ID_TAKEN" if "사용 중" in c["error"] else "BAD_REQUEST", c["error"], "auth", 409 if "사용 중" in c["error"] else 400)
-    key = f"{t['provider']}:{t['sub']}"
-    if (store.kv_get("social_ids", key) or {}).get("email"):
-        raise ServiceError("SOCIAL_TAKEN", "이 소셜 계정은 이미 가입돼 있어요. 다시 로그인해 주세요.", "auth.social", 409)
-    u = store.add_user({"name": name, "short": short, "email": mail, "salt": None, "pw": None, "created_at": time.time(),
-                        "verified": True, "pie_id": _norm_pie(pie_id) if pie_id else _auto_pie_id(mail), "friends": [], "address": "",
-                        "social": {t["provider"]: t["sub"]}})
-    store.kv_put("social_ids", key, {"email": mail})
-    _ticket(ticket, consume=True)
-    return {**_public_user(u), "token": _new_session(mail), "provider": t["provider"]}
-
-
-def social_link_start(user: dict[str, Any], provider: str, redirect_uri: str) -> dict[str, Any]:
-    if provider in (user.get("social") or {}):
-        raise ServiceError("SOCIAL_TAKEN", f"이미 {social.NAMES.get(provider, provider)} 계정이 연결돼 있어요.", "auth.social", 409)
-    return {"url": social_start(provider, redirect_uri, link_email=user["email"])}
-
-
-@_locked
-def social_unlink(user: dict[str, Any], provider: str) -> dict[str, Any]:
-    soc = dict(user.get("social") or {})
-    if provider not in soc:
-        raise ServiceError("NOT_FOUND", "연결되지 않은 소셜 계정이에요.", "auth.social", 404)
-    if not user.get("pw") and len(soc) == 1:
-        raise ServiceError("LAST_LOGIN_METHOD", "로그인할 방법이 없어져요. 먼저 ‘비밀번호 변경’에서 비밀번호를 만들어 주세요.", "auth.social", 409)
-    store.kv_put("social_ids", f"{provider}:{soc.pop(provider)}", None)
-    store.update_user(user["email"], {"social": soc})
-    return {"social": sorted(soc)}
-
-
-def users(q: str = "") -> list[dict[str, Any]]:
+def users(q: str = "", viewer: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """나와 내 친구만 (가입자 전체 목록은 보이지 않음 — 모르는 사람은 Pie ID로만 찾는다). 다른 사람의 이메일·주소는 노출하지 않음."""
     q = (q or "").strip()
-    # 친구 검색: 다른 사람의 이메일은 노출하지 않음
+    allowed = None
+    if viewer is not None:
+        me = _fresh(viewer)
+        allowed = {me.get("pie_id")} | set(me.get("friends") or [])
     return [{k: v for k, v in _public_user(u).items() if k not in ("email", "address")} for u in store.users()
-            if not q or q in u["name"] or q in u["short"] or q.lstrip("@").lower() in (u.get("pie_id") or "")]
+            if (allowed is None or u.get("pie_id") in allowed)
+            and (not q or q in u["name"] or q in u["short"] or q.lstrip("@").lower() in (u.get("pie_id") or ""))]
 
 
 # ───────────── 지갑 등록 / 충전 ─────────────
@@ -2423,12 +2260,6 @@ def ai_usage(me: dict[str, Any], limit: int = 400) -> dict[str, Any]:
             "quota": _quota_view(me["email"]), "sub": sub, "plans": quota.plans_public(), "cycleDays": SUB_CYCLE_SEC // 86400,
             "paid": paid["paid"], "unpaid": 0, "wonPerToken": config.AI_WON_PER_TOKEN, "feeWallet": _fee_wallet(),
             "measured": llm.client.mode == "live", "model": config.KILN_MODEL, "energy": usage.assumptions()}
-
-
-def ai_pay(me: dict[str, Any], amount: Any = None, tx_hash: str | None = None) -> dict[str, Any]:
-    """예전 후불(누적 AI 사용량 송금) — 구독 방식으로 바뀌어 더 받지 않는다."""
-    raise ServiceError("BILLING_CHANGED", "AI 사용료를 쓴 만큼 내는 방식은 없어졌어요. 이제 요금제(Free·Pro·Max)가 사용 한도를 정해요.",
-                       "ai.pay", 410)
 
 
 def shopping_search(query: str, history: list[str] | None = None, flow: str | None = None) -> dict[str, Any]:

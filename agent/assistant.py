@@ -13,8 +13,7 @@ import re
 from typing import Any
 
 from . import brain, config, usage, llm, money, shopping, websearch
-from .textutil import amount_spans, parse_people, to_int
-from .textutil import to_int, won
+from .textutil import amount_spans, parse_people, to_int, won
 
 MAX_STEPS = 6
 DELIVERY_FEE = 3000  # 검색 메뉴의 배달비 가정 (판매처별 1회)

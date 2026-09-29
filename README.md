@@ -52,4 +52,4 @@
 | [`agent/llm.py`](agent/llm.py) | Kiln API 클라이언트 (단계 태그 · 호출마다 input/output 토큰 기록) |
 | [`hardhat/`](hardhat/) | 컨트랙트 테스트 30개(`npm test`) · Sepolia 배포(`npm run deploy -- --network sepolia`) · 위 증거 재현(`npm run evidence`) |
 
-실행(컨트랙트 검증·재현): `cd hardhat && npm install && npm test` (로컬 체인 테스트 30개) · `npm run deploy -- --network sepolia` (배포, `.env.example` → `.env`에 키 입력) · `npm run evidence` (위 증거 재현, 서버 필요). 앱 서버·화면 전체 실행은 데모 영상으로 대신한다.
+실행: `py -3.14 -m pip install -r requirements.txt` → `.env.example`을 `.env`로 복사해 키 입력 → `py -3.14 -m uvicorn deploy.asgi:app --host 0.0.0.0 --port 8000` (자세한 순서는 [`HOW-TO-RUN.md`](HOW-TO-RUN.md)). 컨트랙트 검증·재현: `cd hardhat && npm install && npm test` · `npm run evidence`.

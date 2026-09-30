@@ -1,8 +1,6 @@
 # SharePie — AI Settlement Agent (GWDC 2026 Challenge A)
 
-> SharePie is, at its core, an AI Settlement Agent that interprets users' natural-language cost-sharing conditions, calculates and verifies a compliant settlement, locks the approved amounts in escrow, releases them after the hold period, and records the result on-chain. Two optional modules extend it: an AI Shopping Agent for pre-settlement discovery, and an AI Dispute Agent for post-settlement investigation.
-
-> 사용자가 말로 정한 분담 조건과 지출 한도(1인·총 한도, 허용 판매처)를 AI가 해석하고, 코드가 금액을 계산·검증해 규칙을 통과한 경우에만 참여자가 MetaMask로 직접 Ethereum Sepolia 테스트넷 에스크로(ShareLedger)에 테스트 토큰 PieCoin을 예치하며, 위반 시 결제 없이 중단 기록(`Blocked`)이, 이의제기 시 AI 판정과 환불 기록(`DisputeResolved`·`Refunded`)이 온체인에 남는다.
+> SharePie의 핵심은 AI 정산 에이전트(AI Settlement Agent)다. 사용자가 자연어로 말한 비용 분담 조건을 해석하고, 조건에 맞는 정산을 계산·검증하고, 승인된 금액을 에스크로에 잠그고, 보류 기간이 지나면 지급하고, 그 결과를 온체인에 기록한다. 두 개의 선택 모듈이 이를 확장한다. 정산 전 무엇을 살지 찾아주는 AI Shopping Agent, 정산 후 문제를 조사하는 AI Dispute Agent.
 
 ---
 
